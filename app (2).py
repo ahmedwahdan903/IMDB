@@ -56,7 +56,7 @@ div[data-baseweb="select"] > div {
     color: #f0f0f0 !important;
 }
 
-.stNumberInput input {
+.stNumberInput input, .stTextInput input {
     background-color: #1a1a1a !important;
     border: 1px solid #333 !important;
     color: #f0f0f0 !important;
@@ -141,8 +141,13 @@ MEDIANS = {
     "votes": 484.0, "metascore": 0.0,
     "reviews_from_users": 8.0, "reviews_from_critics": 6.0,
     "usa_gross_income": 1309583.0, "worlwide_gross_income": 1113086.0,
-    "profit": -901914.0
+    "profit": -901914.0,
+    "director": 6.35, "writer": 6.35, "actor": 6.35, "production_company": 6.35,
 }
+
+GENRE_MEDIAN    = 6.35
+COUNTRY_MEDIAN  = 5.75
+LANGUAGE_MEDIAN = 5.85
 
 @st.cache_resource
 def load_all():
@@ -156,18 +161,21 @@ def load_all():
         country_map = json.load(f)
     with open("language_map.json") as f:
         language_map = json.load(f)
-    return model, scaler, columns, genre_map, country_map, language_map
+    with open("director_map.json") as f:
+        director_map = json.load(f)
+    with open("writer_map.json") as f:
+        writer_map = json.load(f)
+    with open("actor_map.json") as f:
+        actor_map = json.load(f)
+    with open("company_map.json") as f:
+        company_map = json.load(f)
+    return model, scaler, columns, genre_map, country_map, language_map, director_map, writer_map, actor_map, company_map
 
 try:
-    model, scaler, columns, genre_map, country_map, language_map = load_all()
+    model, scaler, columns, genre_map, country_map, language_map, director_map, writer_map, actor_map, company_map = load_all()
 except Exception as e:
     st.error(f"⚠️ Error loading files: {e}")
     st.stop()
-
-# Genre median fallback (target encoding median)
-GENRE_MEDIAN    = 6.35
-COUNTRY_MEDIAN  = 5.75
-LANGUAGE_MEDIAN = 5.85
 
 def encode(val, mapping, fallback):
     v = mapping.get(val, fallback)
@@ -175,11 +183,21 @@ def encode(val, mapping, fallback):
         return fallback
     return float(v)
 
-genre_list    = sorted(genre_map.keys())
-country_list  = sorted(country_map.keys())
-language_list = sorted(language_map.keys())
+def encode_text(val, mapping, fallback):
+    """بيبحث عن الاسم في الـ map، لو مش لاقيه بيرجع median"""
+    if not val or val.strip() == "":
+        return fallback
+    # exact match
+    if val in mapping:
+        v = mapping[val]
+        return float(v) if not isinstance(v, str) else fallback
+    # partial match
+    val_lower = val.lower()
+    for k, v in mapping.items():
+        if val_lower in k.lower():
+            return float(v) if not isinstance(v, str) else fallback
+    return fallback
 
-# Common choices at top
 TOP_GENRES    = ["Drama", "Comedy", "Action", "Thriller", "Romance", "Horror",
                  "Documentary", "Animation", "Biography, Drama", "Crime, Drama"]
 TOP_COUNTRIES = ["USA", "UK", "France", "Germany", "Italy", "Spain",
@@ -187,9 +205,9 @@ TOP_COUNTRIES = ["USA", "UK", "France", "Germany", "Italy", "Spain",
 TOP_LANGUAGES = ["English", "French", "German", "Spanish", "Italian",
                  "Japanese", "Hindi", "Arabic", "Korean", "Portuguese"]
 
-genre_list    = TOP_GENRES    + [g for g in genre_list    if g not in TOP_GENRES]
-country_list  = TOP_COUNTRIES + [c for c in country_list  if c not in TOP_COUNTRIES]
-language_list = TOP_LANGUAGES + [l for l in language_list if l not in TOP_LANGUAGES]
+genre_list    = TOP_GENRES    + [g for g in sorted(genre_map.keys())    if g not in TOP_GENRES]
+country_list  = TOP_COUNTRIES + [c for c in sorted(country_map.keys())  if c not in TOP_COUNTRIES]
+language_list = TOP_LANGUAGES + [l for l in sorted(language_map.keys()) if l not in TOP_LANGUAGES]
 
 st.markdown("<h1>🎬 MOVIE RATING PREDICTOR</h1>", unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Predict IMDb Rating Before Your Film Releases</p>', unsafe_allow_html=True)
@@ -198,12 +216,12 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown('<p class="section-title">📽 FILM INFO</p>', unsafe_allow_html=True)
-    year     = st.number_input("Release Year",       min_value=1900, max_value=2030, value=2024)
-    month    = st.selectbox("Release Month", list(range(1, 13)), index=5,
-                             format_func=lambda x: ["Jan","Feb","Mar","Apr","May","Jun",
-                                                     "Jul","Aug","Sep","Oct","Nov","Dec"][x-1])
-    duration = st.number_input("Duration (minutes)", min_value=1,    max_value=600,  value=110)
-    budget_usd = st.number_input("Budget (USD)", min_value=0, value=5_000_000, step=500_000)
+    year       = st.number_input("Release Year",       min_value=1900, max_value=2030, value=2024)
+    month      = st.selectbox("Release Month", list(range(1, 13)), index=5,
+                               format_func=lambda x: ["Jan","Feb","Mar","Apr","May","Jun",
+                                                       "Jul","Aug","Sep","Oct","Nov","Dec"][x-1])
+    duration   = st.number_input("Duration (minutes)", min_value=1,    max_value=600,  value=110)
+    budget_usd = st.number_input("Budget (USD)",       min_value=0,    value=5_000_000, step=500_000)
 
     st.markdown('<p class="section-title">🌍 ORIGIN</p>', unsafe_allow_html=True)
     country_sel  = st.selectbox("Country",  country_list)
@@ -212,10 +230,11 @@ with col1:
 
 with col2:
     st.markdown('<p class="section-title">👥 CAST & CREW</p>', unsafe_allow_html=True)
-    director           = st.number_input("Director (encoded)",           min_value=0, value=100)
-    writer             = st.number_input("Writer (encoded)",             min_value=0, value=100)
-    actor              = st.number_input("Actor (encoded)",              min_value=0, value=100)
-    production_company = st.number_input("Production Company (encoded)", min_value=0, value=50)
+    st.markdown('<p class="info-note">اكتب الاسم بالإنجليزي</p>', unsafe_allow_html=True)
+    director_input = st.text_input("Director", placeholder="e.g. Christopher Nolan")
+    writer_input   = st.text_input("Writer",   placeholder="e.g. Quentin Tarantino")
+    actor_input    = st.text_input("Lead Actor", placeholder="e.g. Tom Hanks")
+    company_input  = st.text_input("Production Company", placeholder="e.g. Warner Bros.")
 
     st.markdown('<p class="section-title">💰 FINANCIALS</p>', unsafe_allow_html=True)
     st.markdown('<p class="info-note">Optional — leave 0 if unknown</p>', unsafe_allow_html=True)
@@ -235,13 +254,18 @@ if predict:
     country_enc  = encode(country_sel,  country_map,  COUNTRY_MEDIAN)
     language_enc = encode(language_sel, language_map, LANGUAGE_MEDIAN)
 
+    director_enc = encode_text(director_input, director_map, MEDIANS["director"])
+    writer_enc   = encode_text(writer_input,   writer_map,   MEDIANS["writer"])
+    actor_enc    = encode_text(actor_input,    actor_map,    MEDIANS["actor"])
+    company_enc  = encode_text(company_input,  company_map,  MEDIANS["production_company"])
+
     input_data = {col: MEDIANS.get(col, 0) for col in columns}
     input_data.update({
         "year": year, "month": month, "duration": duration,
         "budget_usd": budget_usd,
         "genre": genre_enc, "country": country_enc, "language": language_enc,
-        "director": director, "writer": writer,
-        "actor": actor, "production_company": production_company,
+        "director": director_enc, "writer": writer_enc,
+        "actor": actor_enc, "production_company": company_enc,
         "usa_gross_income": usa_final,
         "worlwide_gross_income": world_final,
         "profit": profit_val,
