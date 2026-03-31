@@ -56,7 +56,7 @@ div[data-baseweb="select"] > div {
     color: #f0f0f0 !important;
 }
 
-.stNumberInput input, .stTextInput input {
+.stNumberInput input {
     background-color: #1a1a1a !important;
     border: 1px solid #333 !important;
     color: #f0f0f0 !important;
@@ -145,18 +145,51 @@ MEDIANS = {
 }
 
 @st.cache_resource
-def load_model():
+def load_all():
     model  = joblib.load("movie_rating_model.pkl")
     scaler = joblib.load("scaler.pkl")
     with open("columns.json") as f:
         columns = json.load(f)
-    return model, scaler, columns
+    with open("genre_map.json") as f:
+        genre_map = json.load(f)
+    with open("country_map.json") as f:
+        country_map = json.load(f)
+    with open("language_map.json") as f:
+        language_map = json.load(f)
+    return model, scaler, columns, genre_map, country_map, language_map
 
 try:
-    model, scaler, columns = load_model()
+    model, scaler, columns, genre_map, country_map, language_map = load_all()
 except Exception as e:
-    st.error(f"⚠️ Model files not found: {e}")
+    st.error(f"⚠️ Error loading files: {e}")
     st.stop()
+
+# Genre median fallback (target encoding median)
+GENRE_MEDIAN    = 6.35
+COUNTRY_MEDIAN  = 5.75
+LANGUAGE_MEDIAN = 5.85
+
+def encode(val, mapping, fallback):
+    v = mapping.get(val, fallback)
+    if isinstance(v, str):
+        return fallback
+    return float(v)
+
+genre_list    = sorted(genre_map.keys())
+country_list  = sorted(country_map.keys())
+language_list = sorted(language_map.keys())
+
+# Common choices at top
+TOP_GENRES    = ["Drama", "Comedy", "Action", "Thriller", "Romance", "Horror",
+                 "Documentary", "Animation", "Biography, Drama", "Crime, Drama"]
+TOP_COUNTRIES = ["USA", "UK", "France", "Germany", "Italy", "Spain",
+                 "Japan", "India", "Australia", "Canada"]
+TOP_LANGUAGES = ["English", "French", "German", "Spanish", "Italian",
+                 "Japanese", "Hindi", "Arabic", "Korean", "Portuguese"]
+
+genre_list    = TOP_GENRES    + [g for g in genre_list    if g not in TOP_GENRES]
+country_list  = TOP_COUNTRIES + [c for c in country_list  if c not in TOP_COUNTRIES]
+language_list = TOP_LANGUAGES + [l for l in language_list if l not in TOP_LANGUAGES]
 
 st.markdown("<h1>🎬 MOVIE RATING PREDICTOR</h1>", unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Predict IMDb Rating Before Your Film Releases</p>', unsafe_allow_html=True)
@@ -165,17 +198,17 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown('<p class="section-title">📽 FILM INFO</p>', unsafe_allow_html=True)
-    year     = st.number_input("Release Year",     min_value=1900, max_value=2030, value=2024)
+    year     = st.number_input("Release Year",       min_value=1900, max_value=2030, value=2024)
     month    = st.selectbox("Release Month", list(range(1, 13)), index=5,
                              format_func=lambda x: ["Jan","Feb","Mar","Apr","May","Jun",
                                                      "Jul","Aug","Sep","Oct","Nov","Dec"][x-1])
-    duration = st.number_input("Duration (minutes)", min_value=1, max_value=600, value=110)
+    duration = st.number_input("Duration (minutes)", min_value=1,    max_value=600,  value=110)
     budget_usd = st.number_input("Budget (USD)", min_value=0, value=5_000_000, step=500_000)
 
     st.markdown('<p class="section-title">🌍 ORIGIN</p>', unsafe_allow_html=True)
-    country  = st.number_input("Country (encoded)",  min_value=0, value=1)
-    language = st.number_input("Language (encoded)", min_value=0, value=1)
-    genre    = st.number_input("Genre (encoded)",    min_value=0, value=5)
+    country_sel  = st.selectbox("Country",  country_list)
+    language_sel = st.selectbox("Language", language_list)
+    genre_sel    = st.selectbox("Genre",    genre_list)
 
 with col2:
     st.markdown('<p class="section-title">👥 CAST & CREW</p>', unsafe_allow_html=True)
@@ -198,11 +231,15 @@ if predict:
     world_final = world_gross if world_gross > 0 else MEDIANS["worlwide_gross_income"]
     profit_val  = world_final - budget_usd
 
+    genre_enc    = encode(genre_sel,    genre_map,    GENRE_MEDIAN)
+    country_enc  = encode(country_sel,  country_map,  COUNTRY_MEDIAN)
+    language_enc = encode(language_sel, language_map, LANGUAGE_MEDIAN)
+
     input_data = {col: MEDIANS.get(col, 0) for col in columns}
     input_data.update({
         "year": year, "month": month, "duration": duration,
-        "budget_usd": budget_usd, "country": country,
-        "language": language, "genre": genre,
+        "budget_usd": budget_usd,
+        "genre": genre_enc, "country": country_enc, "language": language_enc,
         "director": director, "writer": writer,
         "actor": actor, "production_company": production_company,
         "usa_gross_income": usa_final,
